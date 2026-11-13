@@ -63,6 +63,8 @@ class AudioBookService : Service() {
     private var noisyOn = false
     private var pausedAt = 0L
     private var lastNotify = 0L
+    private var sessionMs = 0L           // heard since Play, for the log line when it stops
+    private var streamed = 0             // pages played from the server since Play (not on the phone yet)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -93,6 +95,9 @@ class AudioBookService : Service() {
                 val id = intent.getStringExtra("book") ?: return START_NOT_STICKY
                 val b = AudioBookStore.book(this, id) ?: run { lastError = "This audiobook is not on the phone"; update(); return START_NOT_STICKY }
                 if (intent.hasExtra("speed")) speed = intent.getFloatExtra("speed", 1f).coerceIn(0.5f, 2.5f)
+                val from = intent.getIntExtra("page", 0); val withSound = AudioBookStore.pages(b).size; val onPhone = AudioBookStore.downloaded(this, id).size
+                AppLogBridge.w('I', "play from page $from of $withSound with sound, speed ${speed}x, $onPhone on the phone")
+                sessionMs = 0
                 open(b, intent.getIntExtra("page", 0), intent.getIntExtra("pos", 0), true)
                 startSync(id)
             }
@@ -136,7 +141,7 @@ class AudioBookService : Service() {
         p.setWakeMode(this, PowerManager.PARTIAL_WAKE_LOCK)
         try {
             if (f.isFile && f.length() > 0) p.setDataSource(f.path)
-            else p.setDataSource(this, Uri.parse(audioUrl(b, n)), mapOf("X-TTS-Key" to b.optString("key")))
+            else { p.setDataSource(this, Uri.parse(audioUrl(b, n)), mapOf("X-TTS-Key" to b.optString("key"))); if (streamed++ < 5 || streamed % 20 == 0) AppLogBridge.w('I', "page $n is not on the phone yet: played from the server ($streamed so far)") }
         } catch (e: Exception) {
             p.release(); waitFor(n, "the page could not be opened"); return
         }
@@ -148,7 +153,7 @@ class AudioBookService : Service() {
         }
         p.setOnCompletionListener { mp -> if (player === mp) pageDone() }
         p.setOnErrorListener { mp, what, extra ->
-            if (player === mp) { Log.w(TAG, "Page $n: player error $what/$extra"); waitFor(n, "the page is not ready") }
+            if (player === mp) { Log.w(TAG, "Page $n: player error $what/$extra"); waitFor(n, "player error $what/$extra") }
             true
         }
         player = p
@@ -163,6 +168,7 @@ class AudioBookService : Service() {
         playing = false; waiting = true; waitTries++
         if (waitTries > 40) { lastError = "Page $n could not be played: $why"; waiting = false; wantPlay = false; AppLogBridge.w('W', "page $n could not be played after waiting ($why)"); update(); return }
         lastError = null
+        if (waitTries == 1 || waitTries % 10 == 0) AppLogBridge.w('W', "page $n could not be played yet ($why): waiting, try $waitTries")
         update()
         main.postDelayed({ if (waiting && page == n && book != null) playPage(n, 0) }, if (waitTries < 3) 5000L else 15000L)
     }
@@ -170,8 +176,9 @@ class AudioBookService : Service() {
     private fun startSound() {
         val p = player ?: return
         if (!prepared) { wantPlay = true; return }
-        if (!takeFocus()) { Log.w(TAG, "No audio focus"); return }
-        try { applySpeed(); p.start() } catch (e: Exception) { Log.w(TAG, "Start failed: ${e.message}") ; return }
+        if (!takeFocus()) { Log.w(TAG, "No audio focus"); AppLogBridge.w('W', "Android did not give the sound to the player (another app holds it, or a call)"); return }
+        try { applySpeed(); p.start() } catch (e: Exception) { Log.w(TAG, "Start failed: ${e.message}"); AppLogBridge.w('W', "page $page could not start (${e.javaClass.simpleName})"); return }
+        if (waitTries > 0) AppLogBridge.w('I', "page $page plays after waiting")
         playing = true; wantPlay = true; playedFrom = SystemClock.elapsedRealtime()
         noisy(true)
         saveState(); update()
@@ -219,6 +226,7 @@ class AudioBookService : Service() {
         endPage(true)
         val i = pages.indexOf(page)
         if (i < 0 || i >= pages.size - 1) {   // the end of the book
+            AppLogBridge.w('I', "the end of the book (page $page); ${sessionMs / 60000} min heard since Play")
             playing = false; wantPlay = false; releasePlayer(); noisy(false)
             val st = JSONObject().put("book", book?.optString("id")).put("page", page).put("pos", 0).put("speed", speed.toDouble()).put("playing", false).put("ended", true)
             AudioBookStore.saveState(this, st)
@@ -231,6 +239,7 @@ class AudioBookService : Service() {
     private fun endPage(done: Boolean) {
         val b = book ?: return
         countPlayed()
+        sessionMs += playedMs
         if (page > 0 && (playedMs > 0 || done)) AudioBookStore.addHeard(this, b.getString("id"), page, playedMs, done)
         playedMs = 0
     }
@@ -242,6 +251,7 @@ class AudioBookService : Service() {
 
     fun stopAll() {
         if (player != null) { endPage(false); saveState() }
+        if (book != null) AppLogBridge.w('I', "stopped on page $page; ${sessionMs / 60000} min heard since Play")
         syncing = false
         releasePlayer(); playing = false; wantPlay = false; waiting = false; noisy(false); dropFocus()
         book = null
@@ -288,14 +298,14 @@ class AudioBookService : Service() {
 
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
-            AudioManager.AUDIOFOCUS_LOSS -> { resumeOnGain = false; if (playing) pause() }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> { if (playing) { resumeOnGain = true; pause() } }
-            AudioManager.AUDIOFOCUS_GAIN -> { if (resumeOnGain) { resumeOnGain = false; resume() } }
+            AudioManager.AUDIOFOCUS_LOSS -> { resumeOnGain = false; if (playing) { AppLogBridge.w('I', "paused: another app took the sound"); pause() } }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> { if (playing) { AppLogBridge.w('I', "paused for a moment (a call or a notification)"); resumeOnGain = true; pause() } }
+            AudioManager.AUDIOFOCUS_GAIN -> { if (resumeOnGain) { resumeOnGain = false; AppLogBridge.w('I', "carries on after the interruption"); resume() } }
         }
     }
 
     private val noisyReceiver = object : BroadcastReceiver() {
-        override fun onReceive(c: Context, i: Intent) { if (i.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY && playing) pause() }
+        override fun onReceive(c: Context, i: Intent) { if (i.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY && playing) { AppLogBridge.w('I', "paused: headphones were unplugged"); pause() } }
     }
 
     private fun noisy(on: Boolean) {
@@ -347,6 +357,7 @@ class AudioBookService : Service() {
                     errors++
                     lastError = if (errors > 2) "No connection to the voice server" else null
                     Log.w(TAG, "Fetching failed: ${e.message}")
+                    if (errors == 1 || errors % 10 == 0) AppLogBridge.w('W', "fetching failed ($errors in a row): ${e.javaClass.simpleName}")
                     if (errors > 40) { AppLogBridge.w('W', "fetching stopped after $errors failures: ${e.javaClass.simpleName}"); break }
                     try { Thread.sleep(if (errors < 5) 10000L else 30000L) } catch (x: InterruptedException) { break }
                 }
@@ -365,7 +376,7 @@ class AudioBookService : Service() {
         try {
             c.connectTimeout = 20000; c.readTimeout = 60000
             c.setRequestProperty("X-TTS-Key", b.optString("key"))
-            if (c.responseCode != 200) return false
+            if (c.responseCode != 200) { AppLogBridge.w('W', "page $n could not be fetched (server answered ${c.responseCode})"); return false }
             c.inputStream.use { inp -> part.outputStream().use { out -> inp.copyTo(out) } }
             return part.length() > 0 && part.renameTo(f)
         } finally {
@@ -454,7 +465,7 @@ class AudioBookService : Service() {
         override fun run() {
             if (playing) { saveState(); update() }
             // paused for half an hour with nothing to fetch: let go (the place is saved; the app or the notification starts again)
-            if (!playing && !syncing && !waiting && pausedAt > 0 && SystemClock.elapsedRealtime() - pausedAt > 30 * 60_000L) { stopAll(); return }
+            if (!playing && !syncing && !waiting && pausedAt > 0 && SystemClock.elapsedRealtime() - pausedAt > 30 * 60_000L) { AppLogBridge.w('I', "paused for 30 min: the player let go"); stopAll(); return }
             main.postDelayed(this, 2000)
         }
     }
