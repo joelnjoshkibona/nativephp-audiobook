@@ -1,0 +1,16 @@
+{
+    "name": "blutrixx/nativephp-audiobook",
+    "description": "NativePHP Mobile plugin: audiobooks from a voice server, fetched in the background and played with the screen off.",
+    "type": "nativephp-plugin",
+    "license": "MIT",
+    "authors": [{ "name": "Blutrixx" }],
+    "require": { "php": "^8.2", "nativephp/mobile": "^3.0 || ^4.0" },
+    "autoload": { "psr-4": { "Blutrixx\\AudioBook\\": "src/" } },
+    "extra": {
+        "laravel": { "providers": ["Blutrixx\\AudioBook\\AudioBookServiceProvider"] },
+        "nativephp": { "manifest": "nativephp.json" }
+    },
+    "require-dev": { "pestphp/pest": "^3.0" },
+    "scripts": { "test": "pest" },
+    "config": { "allow-plugins": { "pestphp/pest-plugin": true } }
+}

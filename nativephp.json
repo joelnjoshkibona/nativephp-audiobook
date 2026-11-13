@@ -1,0 +1,37 @@
+{
+    "name": "blutrixx/nativephp-audiobook",
+    "version": "1.0.0",
+    "description": "Audiobooks from a voice server: pages fetched in the background, played page after page with the screen off, with lock-screen and headphone controls.",
+    "namespace": "AudioBook",
+    "keywords": ["audiobook", "audio", "player", "tts", "media", "android"],
+    "category": "media",
+    "license": "MIT",
+    "pricing": { "type": "free" },
+    "author": { "name": "Blutrixx", "url": "" },
+    "homepage": "https://github.com/joelnjoshkibona/nativephp-audiobook",
+    "repository": "https://github.com/joelnjoshkibona/nativephp-audiobook",
+    "platforms": ["android"],
+    "service_provider": "Blutrixx\\AudioBook\\AudioBookServiceProvider",
+    "events": [],
+    "bridge_functions": [
+        { "name": "AudioBook.Prepare", "android": "com.blutrixx.plugins.audiobook.AudioBookFunctions.Prepare", "android_params": ["context"], "description": "Keep a book on the phone (server, key, title, pages) and fetch its voiced pages in the background" },
+        { "name": "AudioBook.Play", "android": "com.blutrixx.plugins.audiobook.AudioBookFunctions.Play", "android_params": ["context"], "description": "Play a prepared book from a page, page after page, with the screen off" },
+        { "name": "AudioBook.Control", "android": "com.blutrixx.plugins.audiobook.AudioBookFunctions.Control", "android_params": ["context"], "description": "pause, resume, toggle, next, prev, stop, speed, seek" },
+        { "name": "AudioBook.State", "android": "com.blutrixx.plugins.audiobook.AudioBookFunctions.State", "android_params": ["context"], "description": "Where the player is, what a book has on the phone, and the pages heard since the last drain" },
+        { "name": "AudioBook.Delete", "android": "com.blutrixx.plugins.audiobook.AudioBookFunctions.Delete", "android_params": ["context"], "description": "Remove a book's audio from the phone" }
+    ],
+    "android": {
+        "min_version": 26,
+        "permissions": [
+            "android.permission.INTERNET",
+            "android.permission.WAKE_LOCK",
+            "android.permission.POST_NOTIFICATIONS",
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+            "android.permission.FOREGROUND_SERVICE_DATA_SYNC"
+        ],
+        "services": [
+            { "name": ".AudioBookService", "exported": false, "foregroundServiceType": "mediaPlayback|dataSync" }
+        ]
+    }
+}
